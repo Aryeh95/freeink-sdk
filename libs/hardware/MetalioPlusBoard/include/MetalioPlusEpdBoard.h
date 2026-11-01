@@ -19,7 +19,11 @@ namespace freeink {
 namespace metalioplus {
 
 constexpr uint8_t TPS65185_ADDR = 0x68;
-constexpr int DEFAULT_VCOM_MV = 1200;
+// VCOM is trimmed per panel and the unit measured carries no stored value. At the
+// reference firmware's 1200 mV a GC16 ramp reaches the paper from level 8 up; at
+// 1700 mV, the value a third-party reader firmware uses, a GC16 ramp on another
+// unit puts level 8 at 80% of the way from black to paper and 96% at level 12.
+constexpr int DEFAULT_VCOM_MV = 1700;
 
 // EPDiy board definition. Pass it to epd_init() with the E0470A14_AF display.
 const EpdBoardDefinition& epdBoard();
