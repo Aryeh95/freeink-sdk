@@ -100,6 +100,22 @@ bool waitPowerGoodPin(uint32_t timeoutMs) {
   return false;
 }
 
+// The TPS65185 can answer I2C before its registers are loaded: on one unit REVID
+// still read 0x00 50 ms after WAKEUP, every boot. Wait for a revision before
+// writing UPSEQ. False only when the chip never answered.
+bool waitRevision(uint32_t timeoutMs, uint8_t& revision) {
+  const uint32_t start = millis();
+  bool answered = false;
+  do {
+    if (tpsRead(TPS_REVID, revision)) {
+      answered = true;
+      if (revision != 0) return true;
+    }
+    delay(1);
+  } while (millis() - start < timeoutMs);
+  return answered;
+}
+
 bool waitRailsGood(uint32_t timeoutMs) {
   const uint32_t start = millis();
   do {
@@ -192,10 +208,11 @@ bool powerOnOnce(epd_ctrl_state_t* state) {
   delay(50);
 
   uint8_t revision = 0;
-  if (!tpsRead(TPS_REVID, revision)) {
+  if (!waitRevision(200, revision)) {
     ESP_LOGE(TAG, "TPS65185 does not answer at 0x%02X", TPS65185_ADDR);
     return false;
   }
+  if (revision == 0) ESP_LOGW(TAG, "TPS65185 REVID still 0x00");
   if (!tpsWrite(TPS_UPSEQ0, TPS_UPSEQ0_VALUE) || !tpsWrite(TPS_UPSEQ1, TPS_UPSEQ1_VALUE)) {
     ESP_LOGE(TAG, "TPS65185 power-up sequence write failed");
     return false;
