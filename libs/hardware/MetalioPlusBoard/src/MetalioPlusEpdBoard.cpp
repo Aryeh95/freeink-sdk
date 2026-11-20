@@ -19,6 +19,13 @@
 #include <cstdlib>
 #include <cstring>
 
+#if __has_include(<Logging.h>)
+#include <Logging.h>
+#else
+#define LOG_INF ESP_LOGI
+#define LOG_ERR ESP_LOGE
+#endif
+
 extern "C" {
 #include <epd_display.h>
 #include <epdiy.h>
@@ -201,6 +208,7 @@ bool powerOnOnce(epd_ctrl_state_t* state) {
   tpsPwrup = false;
   tpsVcomCtrl = false;
   boardSetCtrl(state, &mask);
+  delay(2);
 
   uint8_t revision = 0;
   bool revOk = false;
@@ -426,9 +434,9 @@ void vcomReadTask(void* arg) {
   if (ok) {
     const freeink::EpdFlashGuard flashGuard;
     epd_set_vcom(positiveMv);
-    ESP_LOGI(TAG, "Factory VCOM applied: -%d mV (panel %s)", positiveMv, panel);
+    LOG_INF(TAG, "Factory VCOM applied: -%d mV (panel %s)", positiveMv, panel);
   } else {
-    ESP_LOGW(TAG, "Factory VCOM read unavailable; retaining default %d mV", DEFAULT_VCOM_MV);
+    LOG_INF(TAG, "Factory VCOM read unavailable; retaining default %d mV", DEFAULT_VCOM_MV);
   }
 
   uart_driver_delete(BT_AUDIO_UART);
