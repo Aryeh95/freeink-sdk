@@ -148,9 +148,10 @@ constexpr uint8_t kInkLevel[16] = {15, 13, 10, 9, 8, 8, 7, 6, 6, 5, 4, 4, 3, 2, 
 // built from these numbers.
 bool g_tuned = false;
 uint8_t g_tunedPaths[16][3] = {};
-// The glass holds ink from an every-pixel pass of the built-in table (the boot
-// image, a Half or Full frame). It is driven deeper than the calibration
-// table's clearing reaches, so the next calibrated frame starts from a clear.
+// The glass holds ink from a built-in table draw (the boot image, reader pages,
+// window updates, Half or Full B/W frames). It is driven deeper than the
+// calibration table's clearing reaches, so the next calibrated frame starts
+// from a clear.
 bool g_deepInk = false;
 
 // How a frame reaches the glass.
@@ -205,7 +206,7 @@ void drawFront(Draw how) {
       case Draw::Tuned:
         return epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature);
       case Draw::TunedClean: {
-        const enum EpdDrawError cleared = epd_clear_once_checked();
+        const enum EpdDrawError cleared = epd_clear_checked();
         return cleared == EPD_DRAW_SUCCESS ? epd_hl_update_screen_from_white(&g_hl, MODE_GC16, temperature) : cleared;
       }
       case Draw::ReaderTurn:
@@ -250,7 +251,7 @@ void drawFront(Draw how) {
   g_lastGrayDark = 0;
   g_lastGrayLight = 0;
   g_glassMatchesFront = err == EPD_DRAW_SUCCESS;
-  if (err == EPD_DRAW_SUCCESS) g_deepInk = how == Draw::Gc16All || how == Draw::Clean;
+  if (err == EPD_DRAW_SUCCESS) g_deepInk = how != Draw::Tuned && how != Draw::TunedClean;
   if (err != EPD_DRAW_SUCCESS) LOG_ERR(TAG, "EPDiy update failed: 0x%x", static_cast<unsigned>(err));
 }
 
@@ -530,6 +531,7 @@ void EpdiyDriver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   LOG_INF(TAG, "window %u,%u %ux%u: %lld ms result=0x%x", x, y, rw, rh,
           static_cast<long long>((esp_timer_get_time() - startUs) / 1000), static_cast<unsigned>(err));
   g_glassMatchesFront = err == EPD_DRAW_SUCCESS;
+  if (err == EPD_DRAW_SUCCESS) g_deepInk = true;
   if (err != EPD_DRAW_SUCCESS) LOG_ERR(TAG, "EPDiy window update failed: 0x%x", static_cast<unsigned>(err));
 }
 

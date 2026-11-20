@@ -157,10 +157,11 @@ than white left alone, so without a top-up the areas a screen change clears
 stand out against the rest. With the table in use a changed pixel is cleared
 to white and then driven to its level and unchanged grays are not driven, so each level's
 appearance depends on its own numbers alone. A clean (not fast) image is drawn
-from a cleared white screen. So is the first image after an every-pixel frame of
-the built-in table (the first frame after `begin()`, a Half or Full B/W frame):
-that ink is driven deeper than the table's clearing reaches and would otherwise
-stay as a ghost. A table longer than 64 frames is
+from a cleared white screen using the 3-cycle checked clear (`Draw::TunedClean`).
+So is the first tuned image after any built-in table frame (the boot image,
+reader pages, window updates, or Half/Full B/W frames): that ink is driven
+deeper than the table's clearing reaches and would otherwise stay as a ghost. A
+table longer than 64 frames is
 refused.
 `getGray16Levels()` returns the numbers in use, or, before any are set, the
 ones read out of the balanced GC table: its pushes from white to each level and

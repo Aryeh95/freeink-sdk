@@ -37,7 +37,6 @@ static EpdDrawError epd_hl_update_screen_full(int*,int,int){calls+='D';return dr
 static EpdDrawError epd_hl_update_screen(int*,int,int){calls+='D';return drawError;}
 static EpdDrawError epd_hl_update_screen_from_white(int*,int,int){assert(selected==&MY_WAVEFORM);calls+='R';return drawError;}
 static EpdDrawError epd_clear_checked(){calls+='C';return clearError;}
-static EpdDrawError epd_clear_once_checked(){calls+='c';return clearError;}
 static int epd_last_leading_skip(){return 0;}
 static void epd_lcd_get_timing(int* avg,int* mn,int* mx){*avg=0;*mn=0;*mx=0;}
 static int epd_lcd_get_scan_time_us(){return 0;}
@@ -55,6 +54,10 @@ int main(){
  assert(calls=="+C--" && !g_glassMatchesFront);
  calls.clear();g_glassMatchesFront=true;clearError=EPD_DRAW_SUCCESS;drawError=FAILED;driver.deepSleep(bus);
  assert(calls=="+CR--" && !g_glassMatchesFront);
+ drawError=EPD_DRAW_SUCCESS;
+ calls.clear();drawFront(Draw::Gc16Reinforced);assert(g_deepInk && calls=="+D-");
+ calls.clear();drawFront(Draw::TunedClean);assert(!g_deepInk && calls=="+CR-");
+ calls.clear();drawFront(Draw::Tuned);assert(!g_deepInk && calls=="+D-");
  puts("Sleep uses checked clear then full GC16 from white; invalid frames and failures handled");
 }
 """

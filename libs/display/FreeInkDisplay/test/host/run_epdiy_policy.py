@@ -33,7 +33,7 @@ static unsigned changed,calls;
 static Draw last;
 static uint32_t expandFrame(const uint8_t*) {return changed;}
 static bool drawOk=true;
-static void drawFront(Draw how) {calls++;last=how;g_glassMatchesFront=drawOk;}
+static void drawFront(Draw how);
 struct Geometry {uint32_t bufferSize;};
 static uint8_t frontFb[8];
 static int g_hl;
@@ -44,7 +44,14 @@ struct EpdiyDriver {
  void displayGray(EpdBus&,const uint8_t*,bool,const unsigned char*,bool);
  bool displayGray16Image(EpdBus&,const uint8_t*,bool,bool);
 };
-'''+tone+source[a:b]+dgray+gray+r'''
+'''+tone+r'''
+static void drawFront(Draw how) {
+ calls++;
+ last=how;
+ g_glassMatchesFront=drawOk;
+ if(drawOk) g_deepInk=how!=Draw::Tuned && how!=Draw::TunedClean;
+}
+'''+source[a:b]+dgray+gray+r'''
 int main() {
  EpdBus bus; EpdiyDriver driver; uint8_t fb=0;
  auto run=[&](RefreshMode mode) {calls=0;driver.display(bus,&fb,nullptr,mode,false);};
@@ -84,14 +91,15 @@ int main() {
  drawOk=false;assert(!driver.displayGray16Image(bus,image,true,false));drawOk=true;
  // Calibration table in use: ink i is level 15 - i, fast is the tuned draw and
  // a clean frame is drawn from a cleared screen.
- g_tuned=true;uint8_t direct[8]={0xB1,0xF0};
- calls=0;assert(driver.displayGray16Image(bus,direct,true,true) && calls==1 && last==Draw::Tuned);
+ g_tuned=true;g_deepInk=false;uint8_t direct[8]={0xB1,0xF0};
+ calls=0;assert(driver.displayGray16Image(bus,direct,true,true) && calls==1 && last==Draw::Tuned && !g_deepInk);
  assert(frontFb[0]==0xE4 && frontFb[1]==0xF0 && frontFb[2]==0xFF);
- assert(driver.displayGray16Image(bus,direct,true,false) && last==Draw::TunedClean);
- g_resyncPending=true;assert(driver.displayGray16Image(bus,direct,true,true) && last==Draw::Gc16All && !g_resyncPending);
- // Deep ink from an every-pixel built-in frame: the next image starts from a clear, even if unchanged.
- g_deepInk=true;calls=0;assert(driver.displayGray16Image(bus,direct,true,true) && calls==1 && last==Draw::TunedClean);
- g_deepInk=false;calls=0;assert(driver.displayGray16Image(bus,direct,true,true) && calls==0);
+ assert(driver.displayGray16Image(bus,direct,true,false) && last==Draw::TunedClean && !g_deepInk);
+ g_resyncPending=true;assert(driver.displayGray16Image(bus,direct,true,true) && last==Draw::Gc16All && !g_resyncPending && g_deepInk);
+ // Deep ink from any built-in draw (including fast reader/UI GC16): the next tuned image starts from a clear, even if unchanged.
+ g_deepInk=false;changed=1;run(RefreshMode::Fast);assert(last==Draw::Gc16Reinforced && g_deepInk);
+ calls=0;assert(driver.displayGray16Image(bus,direct,true,true) && calls==1 && last==Draw::TunedClean && !g_deepInk);
+ calls=0;assert(driver.displayGray16Image(bus,direct,true,true) && calls==0);
  g_tuned=false;
  puts("EPDiy refresh policy: small/large changes, no-op, invalid baseline, cleanup, startup and 16-level image passed");
 }
