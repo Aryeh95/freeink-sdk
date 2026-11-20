@@ -7,6 +7,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <mutex>
+#include "EpdFlashGuard.h"
 #include "I2cBusLock.h"
 
 namespace freeink {
@@ -105,6 +106,7 @@ inline bool ensureBooted(uint32_t waitMs = 0) {
   static unsigned long lastFailure = 0;
   if (ready) return true;
   freeink::enableI2cBusLock();  // first call runs in setup(), before the render task exists
+  freeink::enableEpdFlashGuard();
   if (waitMs == 0 && tried && millis() - lastFailure < RETRY_GAP_MS) return false;
   tried = true;
   // Holds latched for deep sleep survive a CPU reset and would pin the bus.

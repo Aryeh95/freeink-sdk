@@ -129,6 +129,25 @@ bool writeReg16(uint8_t addr, uint8_t reg, uint16_t val) {
   return w.endTransmission(true) == 0;
 }
 
+bool cx25601nUpdateBits(uint8_t addr, uint8_t reg, uint8_t mask, uint8_t val) {
+  uint8_t cur = 0;
+  if (!readReg8(addr, reg, cur)) return false;
+  const uint8_t next = static_cast<uint8_t>((cur & ~mask) | (val & mask));
+  return next == cur || writeReg8(addr, reg, next);
+}
+
+bool cx25601nUnlockPrivate(uint8_t addr) {
+  for (int attempt = 0; attempt < 10; ++attempt) {
+    if (!writeReg8(addr, 0x70, 0x00) || !writeReg8(addr, 0x70, 0x50) || !writeReg8(addr, 0x70, 0x57) ||
+        !writeReg8(addr, 0x70, 0x44)) {
+      return false;
+    }
+    uint8_t lock = 0;
+    if (readReg8(addr, 0x70, lock) && lock == 0x03) return true;
+  }
+  return false;
+}
+
 // --- BQ27220 Design Capacity -------------------------------------------------
 // TRM SLUUBD4A 6.1: unseal, full access, CONFIG UPDATE, checksummed Data Memory
 // writes, exit with reinit, seal. The X3's gauge ignores keys sent back to back,
@@ -773,7 +792,11 @@ bool BatteryMonitor::readPercentageChecked(uint16_t& out) const {
 bool BatteryMonitor::enterShipMode() {
 #if FREEINK_BATTERY_I2C_GAUGE
   const auto& g = BoardConfig::ACTIVE.batteryGauge;
-  if (g.chargerAddr == 0 || g.chargerType != BoardConfig::ChargerType::Sgm41562) return false;
+  if (g.chargerAddr == 0) return false;
+  if (g.chargerType == BoardConfig::ChargerType::Cx25601n) {
+    return writeReg8(g.chargerAddr, 0x18, 0x01);
+  }
+  if (g.chargerType != BoardConfig::ChargerType::Sgm41562) return false;
   uint8_t v = 0;
   if (!readReg8(g.chargerAddr, SGM41562_REG_BATFET, v)) return false;
   return writeReg8(g.chargerAddr, SGM41562_REG_BATFET, v | 0x20);
@@ -785,7 +808,37 @@ bool BatteryMonitor::enterShipMode() {
 bool BatteryMonitor::configureCharger() {
 #if FREEINK_BATTERY_I2C_GAUGE
   const auto& g = BoardConfig::ACTIVE.batteryGauge;
-  if (g.chargerAddr == 0 || g.chargerType != BoardConfig::ChargerType::Sgm41562) return false;
+  if (g.chargerAddr == 0) return false;
+  if (g.chargerType == BoardConfig::ChargerType::Cx25601n) {
+    uint8_t part = 0;
+    if (!readReg8(g.chargerAddr, 0x38, part)) return false;
+    constexpr uint16_t kVregCode = 440;    // 4400 mV
+    constexpr uint16_t kIchgCode = 18;     // 1440 mA (80 mA/LSB)
+    constexpr uint16_t kIindpmCode = 72;   // 1440 mA (20 mA/LSB)
+    bool ok = cx25601nUpdateBits(g.chargerAddr, 0x15, 0x40, 0x00) &&
+              cx25601nUpdateBits(g.chargerAddr, 0x16, 0x13, 0x00) &&
+              cx25601nUpdateBits(g.chargerAddr, 0x10, 0xF0, 0xC0) &&
+              cx25601nUpdateBits(g.chargerAddr, 0x11, 0x01, 0x00) &&
+              cx25601nUpdateBits(g.chargerAddr, 0x12, 0xF8, 0x30) &&
+              cx25601nUpdateBits(g.chargerAddr, 0x13, 0x01, 0x00) &&
+              cx25601nUpdateBits(g.chargerAddr, 0x04, 0xF8, static_cast<uint8_t>((kVregCode & 0x1F) << 3)) &&
+              cx25601nUpdateBits(g.chargerAddr, 0x05, 0x0F, static_cast<uint8_t>((kVregCode >> 5) & 0x0F));
+    if (!ok || !cx25601nUnlockPrivate(g.chargerAddr)) return false;
+    ok = writeReg8(g.chargerAddr, 0x86, 0x06) && writeReg8(g.chargerAddr, 0x3A, 0x10) &&
+         writeReg8(g.chargerAddr, 0x46, 0x20) && writeReg8(g.chargerAddr, 0x70, 0x00);
+    if (!ok) return false;
+    return cx25601nUpdateBits(g.chargerAddr, 0x14, 0x01, 0x01) &&
+           cx25601nUpdateBits(g.chargerAddr, 0x18, 0x04, 0x00) &&
+           cx25601nUpdateBits(g.chargerAddr, 0x1A, 0x80, 0x80) &&
+           cx25601nUpdateBits(g.chargerAddr, 0x23, 0x1C, 0x1C) &&
+           cx25601nUpdateBits(g.chargerAddr, 0x24, 0x08, 0x08) &&
+           cx25601nUpdateBits(g.chargerAddr, 0x02, 0xC0, static_cast<uint8_t>((kIchgCode & 0x03) << 6)) &&
+           cx25601nUpdateBits(g.chargerAddr, 0x03, 0x0F, static_cast<uint8_t>((kIchgCode >> 2) & 0x0F)) &&
+           cx25601nUpdateBits(g.chargerAddr, 0x06, 0xF0, static_cast<uint8_t>((kIindpmCode & 0x0F) << 4)) &&
+           cx25601nUpdateBits(g.chargerAddr, 0x07, 0x0F, static_cast<uint8_t>((kIindpmCode >> 4) & 0x0F)) &&
+           cx25601nUpdateBits(g.chargerAddr, 0x16, 0x20, 0x20);
+  }
+  if (g.chargerType != BoardConfig::ChargerType::Sgm41562) return false;
   uint8_t gate = 0xFF;
   if (!readReg8(g.chargerAddr, 0x0B, gate) || gate != 0) return false;
   // {register, mask, value}, in stock order (FUN_4200a2d0, build 2912).
@@ -955,6 +1008,20 @@ uint16_t BatteryMonitor::readMillivolts() const {
 
 double BatteryMonitor::readVolts() const {
   return static_cast<double>(readMillivolts()) / 1000.0;
+}
+
+bool BatteryMonitor::readCurrentMilliampsChecked(int16_t& out) const {
+#if FREEINK_BATTERY_I2C_GAUGE
+  const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  if (g.gaugeAddr == 0 || g.gaugeType != BoardConfig::GaugeType::Bq27220) return false;
+  uint16_t raw = 0;
+  if (!readReg16(g.gaugeAddr, BQ27220_CURRENT, raw)) return false;
+  out = static_cast<int16_t>(raw);
+  return true;
+#else
+  (void)out;
+  return false;
+#endif
 }
 
 bool BatteryMonitor::isCharging() const {

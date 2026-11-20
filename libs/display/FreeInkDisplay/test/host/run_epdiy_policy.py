@@ -17,8 +17,12 @@ code=r'''
 #include <cstring>
 struct EpdBus {};
 enum class RefreshMode {Full,Half,Fast};
-enum class Draw {Gc16Reinforced,Gc16All,Clean,Tuned,TunedClean};
+enum class Draw {Gc16Reinforced,ReaderTurn,Gc16All,Clean,Tuned,TunedClean};
 static bool g_started=true,g_basePending,g_resyncPending,g_firstFrameAllPixels,g_glassMatchesFront=true;
+static bool g_readerRefresh=false,g_darkBackground=false;
+static int readerWave;
+static const void* my_waveform_reader(){return &readerWave;}
+static Draw selectFastDraw(){return (g_readerRefresh && !g_darkBackground && my_waveform_reader())?Draw::ReaderTurn:Draw::Gc16Reinforced;}
 static unsigned changed,calls;
 static Draw last;
 static uint32_t expandFrame(const uint8_t*) {return changed;}
@@ -47,6 +51,11 @@ int main() {
  g_resyncPending=true;run(RefreshMode::Fast);assert(calls==1 && last==Draw::Gc16All && !g_resyncPending);
  g_basePending=true;changed=1;run(RefreshMode::Fast);assert(!g_basePending);
  g_started=false;run(RefreshMode::Fast);assert(calls==0);
+ g_started=true;
+ g_readerRefresh=true;g_darkBackground=false;changed=1;run(RefreshMode::Fast);assert(calls==1 && last==Draw::ReaderTurn);
+ g_darkBackground=true;run(RefreshMode::Fast);assert(calls==1 && last==Draw::Gc16Reinforced);
+ g_darkBackground=false;changed=0;g_glassMatchesFront=true;run(RefreshMode::Fast);assert(calls==0);
+ g_readerRefresh=false;
  uint8_t image[8]={0xB1,0xF0};  // ink 11,1 then 15,0; the rest white
  assert(!driver.displayGray16Image(bus,image,true,false) && calls==0);
  g_started=true;g_glassMatchesFront=true;

@@ -9,9 +9,10 @@
 // The facade's 1-bpp frame (bit set = white) is expanded into EPDiy's 4-bpp
 // front buffer. EPDiy keeps the previous frame itself, so `prev` is unused.
 // Full clears the glass and draws every pixel from white; Half drives every
-// pixel with GC16 (unchanged ones included, which cleans DU residue); Fast uses
-// DU on changed pixels unless it changes over a quarter of the screen, which
-// then runs GC16 on the changed pixels because DU leaves a ghost of the old screen. Grayscale overlays
+// pixel with GC16 (unchanged ones included, which cleans prior turn residue);
+// Fast uses reinforced trimmed GC16 (or trimmed reader GL16 cross-fade while
+// setReaderRefresh(true) on light backgrounds); displayWindow runs differential
+// GC16 on a clamped partial region. Grayscale overlays
 // (text anti-aliasing, images) are painted into the same front buffer as two
 // extra grey levels and drawn with GC16 over the B/W base. A 16-level image
 // (displayGray16Image) is mapped into the front buffer and drawn with GC16.
@@ -37,6 +38,10 @@ class EpdiyDriver : public PanelDriver {
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
+  void displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y, uint16_t w,
+                     uint16_t h, bool turnOff) override;
+  void setReaderRefresh(bool reading) override;
+  void setBackgroundHint(bool darkBackground) override;
 
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode != GrayscaleMode::Overlay) return {};

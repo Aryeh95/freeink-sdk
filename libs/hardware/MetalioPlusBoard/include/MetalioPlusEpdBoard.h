@@ -9,6 +9,7 @@
 // (XSTL on GPIO4, MODE on GPIO19).
 
 #include <MetalioEInk4PlusBoard.h>
+#include <cstddef>
 #include <stdint.h>
 
 extern "C" {
@@ -20,12 +21,20 @@ namespace metalioplus {
 
 constexpr uint8_t TPS65185_ADDR = 0x68;
 constexpr int DEFAULT_VCOM_MV = 1200;
+constexpr int VCOM_MIN_MV = 1000;
+constexpr int VCOM_MAX_MV = 3000;
 
 // EPDiy board definition. Pass it to epd_init() with the E0470A14_AF display.
 const EpdBoardDefinition& epdBoard();
 
 // True after the last epd_poweron() brought the TPS65185 rails up.
 bool panelPowerGood();
+
+// Parses a BH1098G slot-470 response (`AT+RDATA=470,V1|<neg_mv>|<panel_id>`).
+bool parseFactoryVcomRecord(const char* line, int& positiveMvOut, char* panelOut = nullptr, size_t panelOutSize = 0);
+
+// Spawns a one-shot background task to read factory VCOM from BH1098G slot 470.
+void startFactoryVcomReadAsync();
 
 }  // namespace metalioplus
 }  // namespace freeink

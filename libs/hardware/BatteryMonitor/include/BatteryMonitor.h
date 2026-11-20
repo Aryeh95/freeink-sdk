@@ -64,6 +64,11 @@ public:
     // Read the battery voltage in millivolts (accounts for divider)
     uint16_t readMillivolts() const;
 
+    // Signed instantaneous/average gauge current in mA (positive = charging,
+    // negative = discharging). Returns false if the board has no signed gauge
+    // current source or if the I2C transfer fails.
+    bool readCurrentMilliampsChecked(int16_t& out) const;
+
     // Read the battery voltage in volts (accounts for divider)
     double readVolts() const;
 
@@ -111,13 +116,16 @@ public:
 
     // Cuts the battery off from the system through the charger IC's BATFET
     // (ship mode) — a full power-off the MCU cannot undo; what turns the device
-    // back on is up to the charger. SGM41562 only (REG06 bit 5). Returns false
-    // when the board has no such charger or the I2C write failed.
+    // back on is up to the charger. Supports SGM41562 (REG06 bit 5) and
+    // CX25601N (REG 0x18 = 0x01). Returns false when the board has no supported
+    // charger or the I2C write failed.
     static bool enterShipMode();
 
     // One-time charger setup at boot. SGM41562 (Onyx Picco): replays the stock
     // firmware's init (FUN_4200a2d0) — including the 4.35 V charge voltage for the
     // Picco's high-voltage cell — and only when REG0B reads 0, as stock does.
+    // CX25601N (Metalio E-Ink4-Plus): applies the vendor's 4.40 V VREG, 1440 mA
+    // ICHG/IINDPM, USB DPDM detection, and private-register sequence.
     // Returns false (and changes nothing) on other boards, or if the charger
     // can't be reached.
     static bool configureCharger();

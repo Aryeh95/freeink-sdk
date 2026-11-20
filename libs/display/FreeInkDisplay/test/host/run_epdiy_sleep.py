@@ -22,13 +22,15 @@ enum EpdDrawError {EPD_DRAW_SUCCESS=0, EPD_DRAW_EMPTY_LINE_QUEUE=1, FAILED=2};
 static EpdDrawError clearError=EPD_DRAW_SUCCESS,drawError=EPD_DRAW_SUCCESS;
 #define LOG_INF(tag, ...) ((void)std::printf(__VA_ARGS__))
 #define LOG_ERR(...) ((void)0)
-static constexpr int MODE_GC16=0;
+static constexpr int MODE_GC16=0,MODE_GL16=1;
 static int64_t esp_timer_get_time(){return 0;}
 static void epd_poweron(){calls+='+';}
 static void epd_poweroff(){calls+='-';}
+namespace freeink {struct EpdFlashGuard{ EpdFlashGuard(){} ~EpdFlashGuard(){} };}
 namespace metalioplus {bool panelPowerGood(){return powerGood;}}
 static int epd_ambient_temperature(){return 25;}
 static const EpdWaveform* my_waveform_fast(){return &fastWave;}
+static const EpdWaveform* my_waveform_reader(){return nullptr;}
 static void epd_hl_waveform(int*,const EpdWaveform* wave){selected=wave;}
 static EpdDrawError epd_hl_update_screen_full(int*,int,int){calls+='D';return drawError;}
 static EpdDrawError epd_hl_update_screen(int*,int,int){calls+='D';return drawError;}

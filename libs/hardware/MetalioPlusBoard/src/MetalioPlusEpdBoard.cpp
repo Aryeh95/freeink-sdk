@@ -1,11 +1,23 @@
 #include "MetalioPlusEpdBoard.h"
 
 #include <Arduino.h>
+#include <EpdFlashGuard.h>
 #include <I2cBusLock.h>
 #include <Wire.h>
 #include <driver/gpio.h>
+#include <driver/uart.h>
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_rom_sys.h>
+#include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/idf_additions.h>
+#include <freertos/task.h>
+
+#include <algorithm>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
 
 extern "C" {
 #include <epd_display.h>
@@ -189,13 +201,21 @@ bool powerOnOnce(epd_ctrl_state_t* state) {
   tpsPwrup = false;
   tpsVcomCtrl = false;
   boardSetCtrl(state, &mask);
-  delay(50);
 
   uint8_t revision = 0;
-  if (!tpsRead(TPS_REVID, revision)) {
+  bool revOk = false;
+  for (int i = 0; i < 60; ++i) {
+    if (tpsRead(TPS_REVID, revision)) {
+      revOk = true;
+      break;
+    }
+    delay(1);
+  }
+  if (!revOk) {
     ESP_LOGE(TAG, "TPS65185 does not answer at 0x%02X", TPS65185_ADDR);
     return false;
   }
+  delay(2);
   if (!tpsWrite(TPS_UPSEQ0, TPS_UPSEQ0_VALUE) || !tpsWrite(TPS_UPSEQ1, TPS_UPSEQ1_VALUE)) {
     ESP_LOGE(TAG, "TPS65185 power-up sequence write failed");
     return false;
@@ -278,11 +298,193 @@ const EpdBoardDefinition BOARD = {
     .gpio_write = nullptr,
 };
 
+constexpr gpio_num_t BT_AUDIO_TX_PIN = GPIO_NUM_39;
+constexpr gpio_num_t BT_AUDIO_RX_PIN = GPIO_NUM_38;
+constexpr uart_port_t BT_AUDIO_UART = UART_NUM_1;
+constexpr int BT_AUDIO_BAUD = 115200;
+
+bool isValidPanelChar(unsigned char c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+}
+
+bool querySlot470(int timeoutMs, int& positiveMvOut, char* panelOut, size_t panelOutSize, bool& sawError) {
+  sawError = false;
+  char line[256];
+  size_t len = 0;
+  bool overflow = false;
+  const int64_t deadlineUs = esp_timer_get_time() + static_cast<int64_t>(timeoutMs) * 1000LL;
+  while (esp_timer_get_time() < deadlineUs) {
+    uint8_t ch = 0;
+    const int n = uart_read_bytes(BT_AUDIO_UART, &ch, 1, pdMS_TO_TICKS(10));
+    if (n <= 0) continue;
+    if (ch == '\r' || ch == '\n') {
+      if (len > 0 && !overflow) {
+        line[len] = '\0';
+        if (parseFactoryVcomRecord(line, positiveMvOut, panelOut, panelOutSize)) return true;
+        if (strcmp(line, "ERROR") == 0 || strcmp(line, "FAIL") == 0) {
+          sawError = true;
+          return false;
+        }
+      }
+      len = 0;
+      overflow = false;
+    } else if (ch >= 32 && ch < 127) {
+      if (len + 1 < sizeof(line)) {
+        line[len++] = static_cast<char>(ch);
+      } else {
+        overflow = true;
+      }
+    } else {
+      overflow = true;
+    }
+  }
+  return false;
+}
+
+bool waitModeAck(int timeoutMs) {
+  char line[256];
+  size_t len = 0;
+  bool overflow = false;
+  const int64_t deadlineUs = esp_timer_get_time() + static_cast<int64_t>(timeoutMs) * 1000LL;
+  while (esp_timer_get_time() < deadlineUs) {
+    uint8_t ch = 0;
+    const int n = uart_read_bytes(BT_AUDIO_UART, &ch, 1, pdMS_TO_TICKS(10));
+    if (n <= 0) continue;
+    if (ch == '\r' || ch == '\n') {
+      if (len > 0 && !overflow) {
+        line[len] = '\0';
+        const char* mode = strstr(line, "SET MODE 1");
+        if (mode && (mode[10] == '\0' || mode[10] == ' ')) return true;
+        if (strcmp(line, "ERROR") == 0 || strcmp(line, "FAIL") == 0) return false;
+      }
+      len = 0;
+      overflow = false;
+    } else if (ch >= 32 && ch < 127) {
+      if (len + 1 < sizeof(line)) {
+        line[len++] = static_cast<char>(ch);
+      } else {
+        overflow = true;
+      }
+    } else {
+      overflow = true;
+    }
+  }
+  return false;
+}
+
+bool sendAtAndQueryVcom(int timeoutMs, int& positiveMvOut, char* panelOut, size_t panelOutSize) {
+  static constexpr char kReadCmd[] = "AT+RDATA=470\r\n";
+  uart_flush_input(BT_AUDIO_UART);
+  if (uart_write_bytes(BT_AUDIO_UART, kReadCmd, sizeof(kReadCmd) - 1) != sizeof(kReadCmd) - 1) return false;
+  bool sawError = false;
+  return querySlot470(timeoutMs, positiveMvOut, panelOut, panelOutSize, sawError);
+}
+
+void vcomReadTask(void* arg) {
+  (void)arg;
+  uart_config_t cfg = {};
+  cfg.baud_rate = BT_AUDIO_BAUD;
+  cfg.data_bits = UART_DATA_8_BITS;
+  cfg.parity = UART_PARITY_DISABLE;
+  cfg.stop_bits = UART_STOP_BITS_1;
+  cfg.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+  cfg.source_clk = UART_SCLK_DEFAULT;
+
+  if (uart_driver_install(BT_AUDIO_UART, 512, 0, 0, nullptr, 0) != ESP_OK) {
+    ESP_LOGW(TAG, "BH1098G UART driver install failed; retaining default VCOM");
+    vTaskDelete(nullptr);
+    return;
+  }
+  if (uart_param_config(BT_AUDIO_UART, &cfg) != ESP_OK ||
+      uart_set_pin(BT_AUDIO_UART, BT_AUDIO_TX_PIN, BT_AUDIO_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) {
+    ESP_LOGW(TAG, "BH1098G UART config failed; retaining default VCOM");
+    uart_driver_delete(BT_AUDIO_UART);
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  delay(250);
+  int positiveMv = 0;
+  char panel[80] = {};
+  bool ok = sendAtAndQueryVcom(1500, positiveMv, panel, sizeof(panel));
+
+  if (!ok) {
+    static constexpr char kRxCmd[] = "AT+RX=2\r\n";
+    static constexpr char kModeCmd[] = "AT+MODE=1\r\n";
+    uart_flush_input(BT_AUDIO_UART);
+    uart_write_bytes(BT_AUDIO_UART, kRxCmd, sizeof(kRxCmd) - 1);
+    delay(100);
+    uart_flush_input(BT_AUDIO_UART);
+    uart_write_bytes(BT_AUDIO_UART, kModeCmd, sizeof(kModeCmd) - 1);
+    waitModeAck(1500);
+    for (int attempt = 0; attempt < 2 && !ok; ++attempt) {
+      ok = sendAtAndQueryVcom(1500, positiveMv, panel, sizeof(panel));
+      if (!ok) delay(100);
+    }
+  }
+
+  if (ok) {
+    const freeink::EpdFlashGuard flashGuard;
+    epd_set_vcom(positiveMv);
+    ESP_LOGI(TAG, "Factory VCOM applied: -%d mV (panel %s)", positiveMv, panel);
+  } else {
+    ESP_LOGW(TAG, "Factory VCOM read unavailable; retaining default %d mV", DEFAULT_VCOM_MV);
+  }
+
+  uart_driver_delete(BT_AUDIO_UART);
+  vTaskDelete(nullptr);
+}
+
 }  // namespace
 
 const EpdBoardDefinition& epdBoard() { return BOARD; }
 
 bool panelPowerGood() { return tpsOk; }
+
+bool parseFactoryVcomRecord(const char* line, int& positiveMvOut, char* panelOut, size_t panelOutSize) {
+  static constexpr char kPrefix[] = "AT+RDATA=470,V1|";
+  constexpr size_t kPrefixLen = sizeof(kPrefix) - 1;
+  if (!line || strncmp(line, kPrefix, kPrefixLen) != 0) return false;
+
+  const char* mvStart = line + kPrefixLen;
+  if (*mvStart != '-' && (*mvStart < '0' || *mvStart > '9')) return false;
+  errno = 0;
+  char* mvEnd = nullptr;
+  const long negMv = std::strtol(mvStart, &mvEnd, 10);
+  if (errno != 0 || mvEnd == mvStart || !mvEnd || *mvEnd != '|') return false;
+  if (negMv > -VCOM_MIN_MV || negMv < -VCOM_MAX_MV || (negMv % 10) != 0) return false;
+
+  const char* panelStart = mvEnd + 1;
+  size_t panelLen = strlen(panelStart);
+  while (panelLen > 0 && (panelStart[panelLen - 1] == '\r' || panelStart[panelLen - 1] == '\n' ||
+                          panelStart[panelLen - 1] == ' ' || panelStart[panelLen - 1] == '\t')) {
+    --panelLen;
+  }
+  if (panelLen == 0 || panelLen >= 80) return false;
+  for (size_t i = 0; i < panelLen; ++i) {
+    if (!isValidPanelChar(static_cast<unsigned char>(panelStart[i]))) return false;
+  }
+
+  positiveMvOut = static_cast<int>(-negMv);
+  if (panelOut && panelOutSize > 0) {
+    const size_t copyLen = std::min(panelLen, panelOutSize - 1);
+    memcpy(panelOut, panelStart, copyLen);
+    panelOut[copyLen] = '\0';
+  }
+  return true;
+}
+
+void startFactoryVcomReadAsync() {
+  static bool started = false;
+  if (started) return;
+  started = true;
+  if (xTaskCreatePinnedToCoreWithCaps(vcomReadTask, "vcom_read", 4096, nullptr, tskIDLE_PRIORITY + 1, nullptr, 0,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    if (xTaskCreate(vcomReadTask, "vcom_read", 4096, nullptr, tskIDLE_PRIORITY + 1, nullptr) != pdPASS) {
+      ESP_LOGW(TAG, "Factory VCOM task spawn failed; retaining default %d mV", DEFAULT_VCOM_MV);
+    }
+  }
+}
 
 }  // namespace metalioplus
 }  // namespace freeink

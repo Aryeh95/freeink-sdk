@@ -3,6 +3,7 @@
 #include <BoardConfig.h>
 
 #if FREEINK_DRIVER_EPDIY
+#include <EpdFlashGuard.h>
 #include <MetalioPlusEpdBoard.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
@@ -144,14 +145,23 @@ bool g_deepInk = false;
 // How a frame reaches the glass.
 enum class Draw : uint8_t {
   Gc16Reinforced,  // trimmed transitions with gentle black/white same-color reinforcement
-  Gc16All,      // every pixel, unchanged ones included: cleans residue, flashes
-  Clean,        // black/white clear cycles, then every pixel from white (vendor's deep clean)
-  Tuned,        // calibration table: changed pixels cleared to white, then driven to their level
-  TunedClean,   // clear cycles, then every pixel from white with the calibration table
+  ReaderTurn,      // cross-fade reader GL16: lighter page turns on light backgrounds
+  Gc16All,         // every pixel, unchanged ones included: cleans residue, flashes
+  Clean,           // black/white clear cycles, then every pixel from white (vendor's deep clean)
+  Tuned,           // calibration table: changed pixels cleared to white, then driven to their level
+  TunedClean,      // clear cycles, then every pixel from white with the calibration table
 };
+
+bool g_readerRefresh = false;
+bool g_darkBackground = false;
+
+Draw selectFastDraw() {
+  return (g_readerRefresh && !g_darkBackground && my_waveform_reader()) ? Draw::ReaderTurn : Draw::Gc16Reinforced;
+}
 
 void drawFront(Draw how) {
   const int64_t startUs = esp_timer_get_time();
+  const freeink::EpdFlashGuard flashGuard;
   epd_poweron();
   if (!metalioplus::panelPowerGood()) {
     LOG_ERR(TAG, "panel power failed; frame not drawn");
@@ -162,9 +172,21 @@ void drawFront(Draw how) {
   const int temperature = static_cast<int>(epd_ambient_temperature());
   // The trimmed table reinforces same-color endpoints; cleanup keeps the full erase/redraw table.
   const EpdWaveform* fast = my_waveform_fast();
-  const EpdWaveform* waveform = how == Draw::Gc16Reinforced && fast ? fast : &MY_WAVEFORM;
+  const EpdWaveform* reader = my_waveform_reader();
+  const EpdWaveform* waveform = &MY_WAVEFORM;
+  const char* waveformName = "full";
+  if (how == Draw::ReaderTurn && reader) {
+    waveform = reader;
+    waveformName = "reader";
+  } else if ((how == Draw::Gc16Reinforced || how == Draw::ReaderTurn) && fast) {
+    waveform = fast;
+    waveformName = "trimmed";
+  }
 #ifdef MY_WAVEFORM_HAS_TUNED
-  if ((how == Draw::Tuned || how == Draw::TunedClean) && my_waveform_tuned()) waveform = my_waveform_tuned();
+  if ((how == Draw::Tuned || how == Draw::TunedClean) && my_waveform_tuned()) {
+    waveform = my_waveform_tuned();
+    waveformName = "tuned";
+  }
 #endif
   epd_hl_waveform(&g_hl, waveform);
   const auto run = [&]() -> enum EpdDrawError {
@@ -175,6 +197,8 @@ void drawFront(Draw how) {
         const enum EpdDrawError cleared = epd_clear_checked();
         return cleared == EPD_DRAW_SUCCESS ? epd_hl_update_screen_from_white(&g_hl, MODE_GC16, temperature) : cleared;
       }
+      case Draw::ReaderTurn:
+        return epd_hl_update_screen_full(&g_hl, MODE_GL16, temperature);
       case Draw::Gc16Reinforced:
         // Only the trimmed table has gentle diagonals; retain differential fallback on allocation failure.
         return fast ? epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature)
@@ -201,11 +225,11 @@ void drawFront(Draw how) {
   // Leaving the TPS65185 rails up between frames holds VCOM on the glass, which
   // EPDiy advises against, so they are dropped after every frame.
   epd_poweroff();
-  static const char* const kDrawNames[] = {"GC16 reinforced", "GC16 all", "clean", "tuned", "tuned clean"};
+  static const char* const kDrawNames[] = {"GC16 reinforced", "reader turn", "GC16 all", "clean", "tuned", "tuned clean"};
   LOG_INF(TAG, "%s frame: %lld ms waveform=%s skipped=%d result=0x%x",
           kDrawNames[static_cast<uint8_t>(how)],
           static_cast<long long>((esp_timer_get_time() - startUs) / 1000),
-          how == Draw::Gc16Reinforced && fast ? "trimmed" : "full", epd_last_leading_skip(),
+          waveformName, epd_last_leading_skip(),
           static_cast<unsigned>(err));
   g_glassMatchesFront = err == EPD_DRAW_SUCCESS;
   if (err == EPD_DRAW_SUCCESS) g_deepInk = how == Draw::Gc16All || how == Draw::Clean;
@@ -225,6 +249,7 @@ void EpdiyDriver::begin(EpdBus& bus) {
   (void)bus;
   if (g_started) return;
   g_started = true;
+  freeink::enableEpdFlashGuard();
   buildExpandTable();
   // EPD_LUT_64K selects the S31 pixel-pair lookup; the 1K lookup underruns the
   // LCD stream on this panel (see libs/display/Epdiy/NOTICE.md).
@@ -239,15 +264,19 @@ void EpdiyDriver::begin(EpdBus& bus) {
   // does at boot, so the first differential update has a true baseline. Not
   // epd_fullclear(): it asserts on a draw error, which would reboot every boot.
   epd_hl_set_all_white(&g_hl);
-  epd_poweron();
-  if (metalioplus::panelPowerGood()) {
-    const enum EpdDrawError err = epd_clear_checked();
-    if (err != EPD_DRAW_SUCCESS) LOG_ERR(TAG, "boot clear failed: 0x%x", static_cast<unsigned>(err));
-  } else {
-    LOG_ERR(TAG, "panel power failed; boot clear skipped");
+  {
+    const freeink::EpdFlashGuard flashGuard;
+    epd_poweron();
+    if (metalioplus::panelPowerGood()) {
+      const enum EpdDrawError err = epd_clear_checked();
+      if (err != EPD_DRAW_SUCCESS) LOG_ERR(TAG, "boot clear failed: 0x%x", static_cast<unsigned>(err));
+    } else {
+      LOG_ERR(TAG, "panel power failed; boot clear skipped");
+    }
+    epd_poweroff();
   }
-  epd_poweroff();
   g_firstFrameAllPixels = true;
+  metalioplus::startFactoryVcomReadAsync();
 }
 
 void EpdiyDriver::requestResync(uint8_t settlePasses) {
@@ -275,12 +304,12 @@ void EpdiyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, R
   // CrossPoint's Half is its periodic and screen-change cleanup, so it drives
   // every pixel (the vendor firmware draws its GC16 that way too); driving only
   // the changed ones left traces of earlier DU frames in areas that stayed white.
-  Draw how = mode == RefreshMode::Full ? Draw::Clean : mode == RefreshMode::Half ? Draw::Gc16All : Draw::Gc16Reinforced;
+  Draw how = mode == RefreshMode::Full ? Draw::Clean : mode == RefreshMode::Half ? Draw::Gc16All : selectFastDraw();
   if (g_resyncPending || g_firstFrameAllPixels) {
     how = Draw::Gc16All;
     g_resyncPending = false;
     g_firstFrameAllPixels = false;
-  } else if (how == Draw::Gc16Reinforced && changed == 0 && g_glassMatchesFront) {
+  } else if ((how == Draw::Gc16Reinforced || how == Draw::ReaderTurn) && changed == 0 && g_glassMatchesFront) {
     return;  // nothing to drive; skip the TPS65185 power-up
   }
 
@@ -321,8 +350,9 @@ void EpdiyDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, cons
   // One waveform for the staged base and grey pixels, using the base refresh mode.
   Draw how = Draw::Gc16Reinforced;
   if (g_basePending) {
-    if (g_baseMode == RefreshMode::Full) how = Draw::Clean;
-    if (g_baseMode == RefreshMode::Half) how = Draw::Gc16All;
+    how = g_baseMode == RefreshMode::Full ? Draw::Clean
+        : g_baseMode == RefreshMode::Half ? Draw::Gc16All
+                                          : selectFastDraw();
     if (g_resyncPending || g_firstFrameAllPixels) {
       how = Draw::Gc16All;
       g_resyncPending = false;
@@ -423,6 +453,64 @@ PanelDriver& epdiyDriver() {
   static EpdiyDriver instance;
   return instance;
 }
+
+void EpdiyDriver::displayWindow(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, uint16_t x, uint16_t y,
+                                uint16_t w, uint16_t h, bool turnOff) {
+  if (!g_started || !fb) return;
+  if (g_resyncPending || g_firstFrameAllPixels || g_basePending || !g_glassMatchesFront || w == 0 || h == 0) {
+    display(bus, fb, prev, RefreshMode::Fast, turnOff);
+    return;
+  }
+  const PanelGeometry geom = geometry();
+  if (x >= geom.width || y >= geom.height) return;
+  const uint16_t rw = (w > geom.width - x) ? static_cast<uint16_t>(geom.width - x) : w;
+  const uint16_t rh = (h > geom.height - y) ? static_cast<uint16_t>(geom.height - y) : h;
+  if (rw == 0 || rh == 0) return;
+
+  const uint32_t colStart = x / 8;
+  const uint32_t colEnd = (static_cast<uint32_t>(x) + rw + 7) / 8;
+  auto* front = reinterpret_cast<uint32_t*>(epd_hl_get_framebuffer(&g_hl));
+  uint32_t changed = 0;
+  for (uint16_t row = y; row < y + rh; ++row) {
+    const uint32_t rowOff = static_cast<uint32_t>(row) * geom.widthBytes;
+    for (uint32_t col = colStart; col < colEnd; ++col) {
+      const uint32_t idx = rowOff + col;
+      const uint32_t next = g_expand[fb[idx]];
+      changed += front[idx] != next;
+      front[idx] = next;
+    }
+  }
+  if (changed == 0) return;
+
+  const int64_t startUs = esp_timer_get_time();
+  const freeink::EpdFlashGuard flashGuard;
+  epd_poweron();
+  if (!metalioplus::panelPowerGood()) {
+    LOG_ERR(TAG, "panel power failed; window not drawn");
+    epd_poweroff();
+    g_glassMatchesFront = false;
+    return;
+  }
+  const int temperature = static_cast<int>(epd_ambient_temperature());
+  const EpdWaveform* fast = my_waveform_fast();
+  epd_hl_waveform(&g_hl, fast ? fast : &MY_WAVEFORM);
+  const EpdRect area = {static_cast<int>(x), static_cast<int>(y), static_cast<int>(rw), static_cast<int>(rh)};
+  enum EpdDrawError err = epd_hl_update_area(&g_hl, MODE_GC16, temperature, area);
+  if (err & EPD_DRAW_EMPTY_LINE_QUEUE) {
+    LOG_ERR(TAG, "line stream fault; redrawing window");
+    err = epd_hl_update_area(&g_hl, MODE_GC16, temperature, area);
+    if (err != EPD_DRAW_SUCCESS) g_resyncPending = true;
+  }
+  epd_poweroff();
+  LOG_INF(TAG, "window %u,%u %ux%u: %lld ms result=0x%x", x, y, rw, rh,
+          static_cast<long long>((esp_timer_get_time() - startUs) / 1000), static_cast<unsigned>(err));
+  g_glassMatchesFront = err == EPD_DRAW_SUCCESS;
+  if (err != EPD_DRAW_SUCCESS) LOG_ERR(TAG, "EPDiy window update failed: 0x%x", static_cast<unsigned>(err));
+}
+
+void EpdiyDriver::setReaderRefresh(bool reading) { g_readerRefresh = reading; }
+
+void EpdiyDriver::setBackgroundHint(bool darkBackground) { g_darkBackground = darkBackground; }
 
 #endif  // FREEINK_DRIVER_EPDIY
 

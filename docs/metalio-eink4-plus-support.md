@@ -106,8 +106,8 @@ libs/display/epdiy`.
 | Mode | Waveform |
 |---|---|
 | Full | Black/white clear cycles, then GC16 on every pixel from white (the vendor's deep clean) |
-| Half | GC16 on every pixel, unchanged ones included, which cleans the residue DU leaves |
-| Fast | DU on changed pixels; a change over a quarter of the screen runs GC16 on the changed pixels, because DU leaves a ghost |
+| Half | GC16 on every pixel, unchanged ones included, which cleans prior fast-turn residue |
+| Fast | Reinforced trimmed GC16 (or trimmed reader GL16 cross-fade while `setReaderRefresh(true)` on light backgrounds); `displayWindow()` updates partial regions with differential GC16 |
 | Grayscale overlay | Two extra grey levels (EPDiy levels 3 and 5) written into the front buffer, drawn with GC16 on the changed pixels |
 | 16-level image | `displayGray16Image()`: GC16 on every pixel, or on the changed pixels when `fast` |
 
