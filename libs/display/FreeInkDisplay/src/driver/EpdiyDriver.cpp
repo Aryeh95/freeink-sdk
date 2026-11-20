@@ -348,11 +348,12 @@ void EpdiyDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, cons
   const bool grey = overlayGray();
   if (!grey && !g_basePending) return;
   // One waveform for the staged base and grey pixels, using the base refresh mode.
+  // Anti-aliased/4-tone grayscale overlays stay on calibrated trimmed GC16 (kGrayDark/kGrayLight).
   Draw how = Draw::Gc16Reinforced;
   if (g_basePending) {
     how = g_baseMode == RefreshMode::Full ? Draw::Clean
         : g_baseMode == RefreshMode::Half ? Draw::Gc16All
-                                          : selectFastDraw();
+                                          : (grey ? Draw::Gc16Reinforced : selectFastDraw());
     if (g_resyncPending || g_firstFrameAllPixels) {
       how = Draw::Gc16All;
       g_resyncPending = false;

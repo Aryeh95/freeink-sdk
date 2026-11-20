@@ -8,6 +8,8 @@ source=(root/'src/driver/EpdiyDriver.cpp').read_text()
 a=source.index('void EpdiyDriver::display(')
 b=source.index('void EpdiyDriver::copyGrayscaleLsb(',a)
 tone=source[source.index('constexpr uint8_t kInkLevel'):source.index('// How a frame reaches the glass.')]
+dg_start=source.index('void EpdiyDriver::displayGray(')
+dgray=source[dg_start:source.index('void EpdiyDriver::displayGrayscaleBase(',dg_start)]
 g=source.index('bool EpdiyDriver::displayGray16Image(')
 gray=source[g:source.index('PanelDriver& epdiyDriver()',g)]
 code=r'''
@@ -20,6 +22,9 @@ enum class RefreshMode {Full,Half,Fast};
 enum class Draw {Gc16Reinforced,ReaderTurn,Gc16All,Clean,Tuned,TunedClean};
 static bool g_started=true,g_basePending,g_resyncPending,g_firstFrameAllPixels,g_glassMatchesFront=true;
 static bool g_readerRefresh=false,g_darkBackground=false;
+static RefreshMode g_baseMode=RefreshMode::Fast;
+static bool fakeGrey=false;
+static bool overlayGray(){return fakeGrey;}
 static int readerWave;
 static const void* my_waveform_reader(){return &readerWave;}
 static Draw selectFastDraw(){return (g_readerRefresh && !g_darkBackground && my_waveform_reader())?Draw::ReaderTurn:Draw::Gc16Reinforced;}
@@ -35,9 +40,10 @@ static uint8_t* epd_hl_get_framebuffer(void*) {return frontFb;}
 struct EpdiyDriver {
  Geometry geometry() const {return {2};}
  void display(EpdBus&,const uint8_t*,const uint8_t*,RefreshMode,bool);
+ void displayGray(EpdBus&,const uint8_t*,bool,const unsigned char*,bool);
  bool displayGray16Image(EpdBus&,const uint8_t*,bool,bool);
 };
-'''+tone+source[a:b]+gray+r'''
+'''+tone+source[a:b]+dgray+gray+r'''
 int main() {
  EpdBus bus; EpdiyDriver driver; uint8_t fb=0;
  auto run=[&](RefreshMode mode) {calls=0;driver.display(bus,&fb,nullptr,mode,false);};
@@ -53,7 +59,11 @@ int main() {
  g_started=false;run(RefreshMode::Fast);assert(calls==0);
  g_started=true;
  g_readerRefresh=true;g_darkBackground=false;changed=1;run(RefreshMode::Fast);assert(calls==1 && last==Draw::ReaderTurn);
- g_darkBackground=true;run(RefreshMode::Fast);assert(calls==1 && last==Draw::Gc16Reinforced);
+ g_basePending=true;g_baseMode=RefreshMode::Fast;fakeGrey=true;calls=0;driver.displayGray(bus,&fb,false,nullptr,false);assert(calls==1 && last==Draw::Gc16Reinforced && !g_basePending);
+ g_basePending=true;g_baseMode=RefreshMode::Fast;fakeGrey=false;calls=0;driver.displayGray(bus,&fb,false,nullptr,false);assert(calls==1 && last==Draw::ReaderTurn && !g_basePending);
+ g_basePending=true;g_baseMode=RefreshMode::Half;fakeGrey=true;calls=0;driver.displayGray(bus,&fb,false,nullptr,false);assert(calls==1 && last==Draw::Gc16All && !g_basePending);
+ g_basePending=true;g_baseMode=RefreshMode::Full;fakeGrey=true;calls=0;driver.displayGray(bus,&fb,false,nullptr,false);assert(calls==1 && last==Draw::Clean && !g_basePending);
+ g_darkBackground=true;changed=1;run(RefreshMode::Fast);assert(calls==1 && last==Draw::Gc16Reinforced);
  g_darkBackground=false;changed=0;g_glassMatchesFront=true;run(RefreshMode::Fast);assert(calls==0);
  g_readerRefresh=false;
  uint8_t image[8]={0xB1,0xF0};  // ink 11,1 then 15,0; the rest white

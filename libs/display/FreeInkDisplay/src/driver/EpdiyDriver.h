@@ -10,11 +10,11 @@
 // front buffer. EPDiy keeps the previous frame itself, so `prev` is unused.
 // Full clears the glass and draws every pixel from white; Half drives every
 // pixel with GC16 (unchanged ones included, which cleans prior turn residue);
-// Fast uses reinforced trimmed GC16 (or trimmed reader GL16 cross-fade while
+// Fast uses reinforced trimmed GC16 (or trimmed reader GL16 cross-fade for B/W reader pages while
 // setReaderRefresh(true) on light backgrounds); displayWindow runs differential
 // GC16 on a clamped partial region. Grayscale overlays
 // (text anti-aliasing, images) are painted into the same front buffer as two
-// extra grey levels and drawn with GC16 over the B/W base. A 16-level image
+// extra grey levels and drawn with calibrated trimmed GC16 over the B/W base. A 16-level image
 // (displayGray16Image) is mapped into the front buffer and drawn with GC16.
 //
 // Selection: linked only when FREEINK_DRIVER_EPDIY (derived from
