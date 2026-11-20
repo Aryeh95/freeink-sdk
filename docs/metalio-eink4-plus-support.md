@@ -108,7 +108,7 @@ libs/display/epdiy`.
 | Full | Black/white clear cycles, then GC16 on every pixel from white (the vendor's deep clean) |
 | Half | GC16 on every pixel, unchanged ones included, which cleans prior fast-turn residue |
 | Fast | Reinforced trimmed GC16 (or trimmed reader GL16 cross-fade on light-background B/W reader turns while `setReaderRefresh(true)`); `displayWindow()` updates partial regions with differential GC16 |
-| Grayscale overlay | Two extra grey levels (EPDiy levels 3 and 5) written into the front buffer, drawn with calibrated trimmed GC16 over the B/W base on fast turns |
+| Grayscale overlay | Two extra grey levels (EPDiy levels 4 and 7) written into the front buffer, drawn with calibrated trimmed GC16 over the B/W base on fast turns |
 | 16-level image | `displayGray16Image()`: GC16 on every pixel, or on the changed pixels when `fast` |
 
 At `begin()` the driver clears the glass with three black/white cycles, as the

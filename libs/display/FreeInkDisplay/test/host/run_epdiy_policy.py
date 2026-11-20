@@ -22,6 +22,7 @@ enum class RefreshMode {Full,Half,Fast};
 enum class Draw {Gc16Reinforced,ReaderTurn,Gc16All,Clean,Tuned,TunedClean};
 static bool g_started=true,g_basePending,g_resyncPending,g_firstFrameAllPixels,g_glassMatchesFront=true;
 static bool g_readerRefresh=false,g_darkBackground=false;
+static uint32_t g_lastGrayDark=0,g_lastGrayLight=0;
 static RefreshMode g_baseMode=RefreshMode::Fast;
 static bool fakeGrey=false;
 static bool overlayGray(){return fakeGrey;}

@@ -16,6 +16,7 @@ code=r"""
 using EpdWaveform=int;
 static int g_hl,MY_WAVEFORM,fastWave;
 static bool g_started=true,g_glassMatchesFront=true,g_resyncPending,g_deepInk,powerGood=true;
+static uint32_t g_lastGrayDark=0,g_lastGrayLight=0;
 static std::string calls;
 static const EpdWaveform* selected;
 enum EpdDrawError {EPD_DRAW_SUCCESS=0, EPD_DRAW_EMPTY_LINE_QUEUE=1, FAILED=2};
@@ -36,7 +37,10 @@ static EpdDrawError epd_hl_update_screen_full(int*,int,int){calls+='D';return dr
 static EpdDrawError epd_hl_update_screen(int*,int,int){calls+='D';return drawError;}
 static EpdDrawError epd_hl_update_screen_from_white(int*,int,int){assert(selected==&MY_WAVEFORM);calls+='R';return drawError;}
 static EpdDrawError epd_clear_checked(){calls+='C';return clearError;}
+static EpdDrawError epd_clear_once_checked(){calls+='c';return clearError;}
 static int epd_last_leading_skip(){return 0;}
+static void epd_lcd_get_timing(int* avg,int* mn,int* mx){*avg=0;*mn=0;*mx=0;}
+static int epd_lcd_get_scan_time_us(){return 0;}
 struct EpdBus {};
 struct EpdiyDriver {void deepSleep(EpdBus&);};
 """+s[a:b]+s[c:d]+r"""

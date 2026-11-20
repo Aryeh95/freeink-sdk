@@ -23,6 +23,7 @@ extern "C" {
 #include <epd_display.h>
 #include <epd_highlevel.h>
 #include <epdiy.h>
+#include <output_lcd/lcd_driver.h>
 #include <waveforms/my_waveform.h>
 }
 #endif
@@ -84,14 +85,16 @@ uint32_t expandFrame(const uint8_t* fb) {
 // Overlay grey levels on EPDiy's 0 (black) .. 15 (white) scale, and the two
 // 1-bpp selector planes the facade sends (PSRAM, allocated on first use).
 // A flatbed scan of a 16-level ramp drawn with MY_WAVEFORM's GC16 put level 3
-// at about 22% of the way from black to the paper, 5 at 40%, 7 at 62% and 10 at
-// 86%. With 0x5/0xA the light grey nearly matched the paper and text looked
-// aliased. 3 and 5 are slightly bold; 4 and 7 would split the range evenly, but
-// the difference needs a magnifier.
-constexpr uint8_t kGrayDark = 0x3;
-constexpr uint8_t kGrayLight = 0x5;
+// at about 22% of the way from black to the paper, 4 at ~33%, 5 at 40%, 7 at
+// 62% and 10 at 86%. Levels 4 and 7 split black-to-paper evenly and avoid
+// 0x3/0x5 collapsing toward black across panel/VCOM variance (0x7 uses three
+// consecutive white pull-back pulses WWW vs only two WW on 0x3/0x5).
+constexpr uint8_t kGrayDark = 0x4;
+constexpr uint8_t kGrayLight = 0x7;
 uint8_t* g_lsb = nullptr;
 uint8_t* g_msb = nullptr;
+uint32_t g_lastGrayDark = 0;
+uint32_t g_lastGrayLight = 0;
 
 uint8_t* planeBuffer(GrayPlane plane) {
   uint8_t*& buf = plane == GrayPlane::Lsb ? g_lsb : g_msb;
@@ -107,6 +110,8 @@ uint8_t* planeBuffer(GrayPlane plane) {
 // the page (see LgfxEpdDriver's overlayCanvasGray), so it is not used.
 // Returns false when the planes select no pixel.
 bool overlayGray() {
+  g_lastGrayDark = 0;
+  g_lastGrayLight = 0;
   if (!g_lsb || !g_msb) return false;
   bool any = false;
   uint8_t* front = epd_hl_get_framebuffer(&g_hl);
@@ -120,7 +125,13 @@ bool overlayGray() {
     for (uint8_t bit = 0; bit < 8; ++bit) {
       const uint8_t mask = 0x80 >> bit;
       if (((l | m) & mask) == 0) continue;
-      const uint8_t level = (m & mask) && !(l & mask) ? kGrayLight : kGrayDark;
+      const bool light = (m & mask) && !(l & mask);
+      const uint8_t level = light ? kGrayLight : kGrayDark;
+      if (light) {
+        ++g_lastGrayLight;
+      } else {
+        ++g_lastGrayDark;
+      }
       uint8_t& pair = px[bit / 2];
       pair = (bit & 1) ? static_cast<uint8_t>((pair & 0x0F) | (level << 4)) : static_cast<uint8_t>((pair & 0xF0) | level);
     }
@@ -194,7 +205,7 @@ void drawFront(Draw how) {
       case Draw::Tuned:
         return epd_hl_update_screen_full(&g_hl, MODE_GC16, temperature);
       case Draw::TunedClean: {
-        const enum EpdDrawError cleared = epd_clear_checked();
+        const enum EpdDrawError cleared = epd_clear_once_checked();
         return cleared == EPD_DRAW_SUCCESS ? epd_hl_update_screen_from_white(&g_hl, MODE_GC16, temperature) : cleared;
       }
       case Draw::ReaderTurn:
@@ -225,12 +236,19 @@ void drawFront(Draw how) {
   // Leaving the TPS65185 rails up between frames holds VCOM on the glass, which
   // EPDiy advises against, so they are dropped after every frame.
   epd_poweroff();
+  int phaseAvg = 0, phaseMin = 0, phaseMax = 0;
+  epd_lcd_get_timing(&phaseAvg, &phaseMin, &phaseMax);
+  const int scanUs = epd_lcd_get_scan_time_us();
   static const char* const kDrawNames[] = {"GC16 reinforced", "reader turn", "GC16 all", "clean", "tuned", "tuned clean"};
-  LOG_INF(TAG, "%s frame: %lld ms waveform=%s skipped=%d result=0x%x",
+  LOG_INF(TAG, "%s frame: %lld ms waveform=%s skipped=%d phase=%dus(%d..%d) scan=%dus gray=%lu/%lu result=0x%x",
           kDrawNames[static_cast<uint8_t>(how)],
           static_cast<long long>((esp_timer_get_time() - startUs) / 1000),
           waveformName, epd_last_leading_skip(),
+          phaseAvg, phaseMin, phaseMax, scanUs,
+          static_cast<unsigned long>(g_lastGrayDark), static_cast<unsigned long>(g_lastGrayLight),
           static_cast<unsigned>(err));
+  g_lastGrayDark = 0;
+  g_lastGrayLight = 0;
   g_glassMatchesFront = err == EPD_DRAW_SUCCESS;
   if (err == EPD_DRAW_SUCCESS) g_deepInk = how == Draw::Gc16All || how == Draw::Clean;
   if (err != EPD_DRAW_SUCCESS) LOG_ERR(TAG, "EPDiy update failed: 0x%x", static_cast<unsigned>(err));
@@ -299,6 +317,8 @@ void EpdiyDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, R
   (void)prev;
   (void)turnOff;  // the rails are always dropped below
   if (!g_started || !fb) return;
+  g_lastGrayDark = 0;
+  g_lastGrayLight = 0;
   const uint32_t changed = expandFrame(fb);
   g_basePending = false;  // a plain frame replaces any staged grayscale base
   // CrossPoint's Half is its periodic and screen-change cleanup, so it drives
@@ -368,6 +388,8 @@ void EpdiyDriver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMo
   (void)bus;
   (void)turnOff;
   if (!g_started || !fb) return;
+  g_lastGrayDark = 0;
+  g_lastGrayLight = 0;
   expandFrame(fb);
   g_basePending = true;
   g_baseMode = fallback;
@@ -421,6 +443,8 @@ bool EpdiyDriver::displayGray16Image(EpdBus& bus, const uint8_t* levels, bool tu
   (void)bus;
   (void)turnOff;  // the rails are always dropped after a frame
   if (!g_started || !levels) return false;
+  g_lastGrayDark = 0;
+  g_lastGrayLight = 0;
   // The image has the left pixel in the high nibble; EPDiy in the low one.
   uint8_t* front = epd_hl_get_framebuffer(&g_hl);
   const uint32_t total = geometry().bufferSize * 4;
